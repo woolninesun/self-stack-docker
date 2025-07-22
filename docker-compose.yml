@@ -1,0 +1,104 @@
+name: self-stack-docker
+
+services:
+  traefik:
+    image: ${SELF_STACK_TRAEFIK_IMAGE_NAME:-traefik}:${SELF_STACK_TRAEFIK_IMAGE_TAG:-v3.3.3}
+    container_name: self-stack-traefik
+    restart: unless-stopped
+    ports:
+      # The settings here should be the SAME as the entryPoints in the traefik.yml file
+      - "${SELF_STACK_IP}:11443:11443"
+      - "${SELF_STACK_IP}:11300-11310:11300-11310"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/conf.d/:/etc/traefik/conf.d/:ro
+      - ./certificate:/etc/ssl/traefik:ro
+    networks:
+      - default
+      - tunnel
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.self-stack-traefik-internal.entrypoints=port-11300
+      - traefik.http.routers.self-stack-traefik-internal.tls=true
+      - traefik.http.routers.self-stack-traefik-internal.rule=PathPrefix(`/`)
+      - traefik.http.routers.self-stack-traefik-internal.service=api@internal
+  tunnel:
+    image: ${SELF_STACK_TUNNEL_IMAGE_NAME:-cloudflare/cloudflared}:${SELF_STACK_TUNNEL_IMAGE_TAG:-2025.2.0}
+    container_name: self-stack-tunnel
+    restart: unless-stopped
+    networks:
+      - tunnel
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${SELF_STACK_TUNNEL_TOKEN}
+  postgresql:
+    image: ${SELF_STACK_POSTGRESQL_IMAGE_NAME:-postgres}:${SELF_STACK_POSTGRESQL_IMAGE_TAG:-16.6}
+    container_name: self-stack-postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d postgres -U $${POSTGRES_USER}"]
+      start_period: 20s
+      interval: 1m
+      retries: 3
+      timeout: 5s
+    environment:
+      POSTGRES_USER: ${SELF_STACK_POSTGRESQL_USERNAME}
+      POSTGRES_PASSWORD: ${SELF_STACK_POSTGRESQL_PASSWORD}
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+  redis:
+    image: ${SELF_STACK_REDIS_IMAGE_NAME:-redis}:${SELF_STACK_REDIS_IMAGE_TAG:-6.2.17}
+    container_name: self-stack-redis
+    restart: unless-stopped
+    command: --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      start_period: 20s
+      interval: 1m
+      retries: 3
+      timeout: 5s
+    volumes:
+      - redis-data:/data
+  # https://github.com/maildev/maildev
+  maildev:
+    image: ${SELF_STACK_MAILDEV_IMAGE_NAME:-maildev/maildev}:${SELF_STACK_MAILDEV_IMAGE_TAG:-2.2.1}
+    container_name: self-stack-maildev
+    restart: unless-stopped
+    volumes:
+      - maildev-data:/var/maildev/mails/
+    environment:
+      MAILDEV_MAIL_DIRECTORY: '/var/maildev/mails'
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.self-stack-maildev.loadbalancer.server.port=1080
+      - traefik.http.routers.self-stack-maildev-internal.entrypoints=port-11303
+      - traefik.http.routers.self-stack-maildev-internal.tls=true
+      - traefik.http.routers.self-stack-maildev-internal.rule=PathPrefix(`/`)
+  whoami:
+    image: ${SELF_STACK_WHOAMI_IMAGE_NAME:-traefik/whoami}:${SELF_STACK_WHOAMI_IMAGE_TAG:-v1.10.4}
+    container_name: self-stack-whoami
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.self-stack-whoami.loadbalancer.server.port=80
+      - traefik.http.routers.self-stack-whoami-internal.entrypoints=port-11309
+      - traefik.http.routers.self-stack-whoami-internal.tls=true
+      - traefik.http.routers.self-stack-whoami-internal.rule=PathPrefix(`/`)
+      - traefik.http.routers.self-stack-whoami-external.entrypoints=port-11443
+      - traefik.http.routers.self-stack-whoami-external.tls=true
+      - traefik.http.routers.self-stack-whoami-external.rule=Host(`whoami-jtd6.${SELF_STACK_DOMAIN}`)
+
+volumes:
+  postgresql-data:
+    name: self-stack-postgresql-data
+  redis-data:
+    name: self-stack-redis-data
+  maildev-data:
+    name: self-stack-maildev-data
+
+networks:
+  default:
+    name: self-stack-network
+  tunnel:
+    name: self-stack-tunnel-network
